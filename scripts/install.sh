@@ -4,10 +4,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/lsheva/opencloud-office-viewer/main/scripts/install.sh | sh
 #   sh install.sh --detect        # show the detected paths, change nothing
 #
-# Order of work: everything that needs no privileges happens first (download,
-# unpack, validate, locate directories, fetch the CSP file). Only then does it
-# plan the changes, show them, and ask for sudo once — and only if some target
-# is not already writable. All privileged commands run from that single call.
+# Unprivileged work happens first: download, unpack, validate, locate the apps
+# directory. The apps directory is resolved from the service configuration
+# (systemd unit, drop-ins, EnvironmentFile), not guessed: OC_BASE_DATA_PATH,
+# OC_DATA_DIR or WEB_ASSET_APPS_PATH decide where OpenCloud actually looks.
+# sudo is requested only for the final apply, and only when a target is not
+# already writable.
 #
 # Environment:
 #   APPS_DIR        override the detected apps directory
@@ -32,7 +34,6 @@ sudo_cmd=${SUDO_CMD-sudo}
 step() { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 
-# Single-quote a value for the generated plan script.
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 can_write_dir() {
@@ -45,7 +46,29 @@ can_write_dir() {
   [ -w "$d" ]
 }
 
-# --- detection (no privileges required) --------------------------------------
+# --- configuration of the running instance (no privileges required) -----------
+unit_config() {
+  blob=""
+  if command -v systemctl >/dev/null 2>&1; then
+    blob=$(systemctl cat opencloud 2>/dev/null || true)
+    env_files=$(printf '%s\n' "$blob" | sed -n 's/^EnvironmentFile=-\{0,1\}\(.*\)$/\1/p')
+    for f in $env_files; do
+      [ -r "$f" ] && blob="$blob
+$(cat "$f")"
+    done
+  fi
+  for f in /etc/default/opencloud /etc/sysconfig/opencloud; do
+    [ -r "$f" ] && blob="$blob
+$(cat "$f")"
+  done
+  printf '%s' "$blob"
+}
+
+# key=value out of the unit config; works for quoted and unquoted values.
+kv() {
+  printf '%s\n' "$1" | sed -n "s/.*$2=\([^\" ]*\).*/\1/p" | head -1
+}
+
 detect_apps_dir() {
   if [ -n "$apps_dir_override" ]; then
     printf '%s' "$apps_dir_override"
@@ -56,7 +79,22 @@ detect_apps_dir() {
     return
   fi
 
-  existing=$(find /var/lib /srv /opt /data /mnt /home -maxdepth 6 -type d \
+  if [ -n "${unit_cfg:-}" ]; then
+    explicit=$(kv "$unit_cfg" WEB_ASSET_APPS_PATH)
+    if [ -n "$explicit" ]; then
+      printf '%s' "$explicit"
+      return
+    fi
+    for key in OC_BASE_DATA_PATH OC_DATA_DIR OCIS_BASE_DATA_PATH; do
+      data_dir=$(kv "$unit_cfg" "$key")
+      if [ -n "$data_dir" ]; then
+        printf '%s' "$data_dir/web/assets/apps"
+        return
+      fi
+    done
+  fi
+
+  existing=$(find /var/lib /srv /opt /data /mnt /home -maxdepth 7 -type d \
     -path '*/web/assets/apps' 2>/dev/null | head -1 || true)
   if [ -n "$existing" ]; then
     printf '%s' "$existing"
@@ -154,13 +192,20 @@ note "entrypoint: $(sed -n 's/^ *"entrypoint": *"\([^"]*\)".*/\1/p' "$bundle/man
 
 # --- 3. locate the target ----------------------------------------------------
 step "Locating the OpenCloud apps directory"
+unit_cfg=$(unit_config)
 apps_dir=$(detect_apps_dir)
-note "$apps_dir"
+oc_url=$(kv "$unit_cfg" OC_URL)
+case "$apps_dir" in
+
+  */web/assets/apps) note "$apps_dir (from the service configuration)" ;;
+  *) note "$apps_dir" ;;
+esac
 
 if [ "${1:-}" = "--detect" ]; then
   printf '\n'
   note "csp file:  $csp_target"
   note "drop-in:   $dropin"
+  [ -n "$oc_url" ] && note "instance:  $oc_url"
   exit 0
 fi
 
@@ -172,11 +217,13 @@ if [ "$with_csp" = "1" ]; then
   note "staged at $workdir/csp-override.yaml"
 fi
 
-# --- 5. plan ---------------------------------------------------------------
+# --- 5. plan -----------------------------------------------------------------
 step "Planning changes"
 note "app:     $apps_dir/office-viewer"
-[ "$with_csp" = "1" ] && note "csp:     $csp_target"
-[ "$with_csp" = "1" ] && note "drop-in: $dropin"
+if [ "$with_csp" = "1" ]; then
+  note "csp:     $csp_target"
+  note "drop-in: $dropin"
+fi
 if [ "${NO_RESTART:-}" != "1" ]; then
   note "restart: opencloud"
 else
@@ -237,9 +284,20 @@ else
 fi
 
 note "app installed:  $apps_dir/office-viewer"
-[ "$with_csp" = "1" ] && note "csp installed:  $csp_target"
-if [ "${NO_RESTART:-}" = "1" ]; then
-  note "not restarted — run: sudo systemctl restart opencloud"
+if [ "$with_csp" = "1" ]; then
+  note "csp installed:  $csp_target"
+fi
+
+# --- 7. verify ---------------------------------------------------------------
+if [ "${NO_RESTART:-}" != "1" ] && [ -n "${oc_url:-}" ] && command -v curl >/dev/null 2>&1; then
+  step "Verifying against $oc_url"
+  sleep 3
+  if curl -fsSk --max-time 20 "$oc_url/config.json" 2>/dev/null | grep -q '"id":"office-viewer"'; then
+    note "office-viewer is advertised by the instance — done"
+  else
+    note "office-viewer is not in config.json yet."
+    note "check that $apps_dir is served (WEB_ASSET_APPS_PATH) and that OpenCloud restarted"
+  fi
 fi
 
 step "Done"
