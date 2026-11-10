@@ -140,44 +140,57 @@ and restarting (see the
 > Releases are published from
 > [lsheva/opencloud-office-viewer](https://github.com/lsheva/opencloud-office-viewer).
 
-### From a release archive
+### One-liner (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lsheva/opencloud-office-viewer/main/scripts/install.sh | sh
+```
+
+No arguments, no `sudo` prefix: the script defaults to the latest release archive, asks for
+sudo once, installs the app **and** the CSP override (plus the systemd drop-in pointing at
+it), and restarts OpenCloud. If sudo is unavailable it prints the equivalent commands to
+run as root instead.
+
+| Variable | Effect |
+| --- | --- |
+| `APPS_DIR` | override the detected apps directory |
+| `WITH_CSP=0` | skip the CSP override (it is installed by default) |
+| `NO_RESTART=1` | skip `systemctl restart opencloud` |
+| `CSP_FILE` | use a local CSP file instead of downloading `csp-override.yaml` |
+
+The apps directory is detected, not assumed: the running service's environment is read
+(`WEB_ASSET_APPS_PATH`, then `OC_DATA_DIR`/`OC_BASE_DATA_PATH`), then any existing
+`*/web/assets/apps` directory, and only then OpenCloud's documented default
+(`/var/lib/opencloud/web/assets/apps`). Check the result before installing:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lsheva/opencloud-office-viewer/main/scripts/install.sh \
+  | sh -s -- --detect
+```
+
+### Manually
 
 ```bash
 curl -fsSL -o office-viewer.zip \
   https://github.com/lsheva/opencloud-office-viewer/releases/latest/download/office-viewer.zip
-sudo sh scripts/install.sh office-viewer.zip
+sh scripts/install.sh office-viewer.zip      # WITH_CSP=0 to skip the CSP step
 ```
 
-`office-viewer.zip` is a stable asset name that always points at the newest build (a
-versioned `office-viewer-<version>.zip` is published alongside it).
-
-### One-liner (downloads and installs on the server)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lsheva/opencloud-office-viewer/main/scripts/install.sh \
-  | sudo sh -s -- https://github.com/lsheva/opencloud-office-viewer/releases/latest/download/office-viewer.zip
-```
-
-The installer accepts a URL or a local path, copies the bundle to `${OC_DATA_DIR}/web/assets/apps`
-(default `/var/lib/opencloud`), and restarts OpenCloud. Overrides:
-
-```bash
-# installs into ${OC_DATA_DIR:-/var/lib/opencloud}/web/assets/apps
-sudo CSP_FILE=./csp-override.yaml sh scripts/install.sh office-viewer.zip
-```
-
-`APPS_DIR` overrides the target directory if your data dir is elsewhere.
+`office-viewer.zip` is a stable asset name that always points at the newest build; a
+versioned `office-viewer-<version>.zip` is published alongside it.
 
 ### From source
 
 ```bash
 pnpm install && pnpm package          # -> release/office-viewer.zip
-sudo sh scripts/install.sh release/office-viewer.zip
+sh scripts/install.sh release/office-viewer.zip
 ```
 
-### Required: CSP override
+### CSP override (installed by default)
 
-Without it the app loads but renders nothing, so the installer takes it as `CSP_FILE`:
+Without it the app loads but renders nothing: OpenCloud's default `script-src` has no
+`'wasm-unsafe-eval'` and there is no `worker-src`, so the library's `blob:` worker is
+refused. The installer handles this; to do it by hand:
 
 ```bash
 sudo cp csp-override.yaml /etc/opencloud/csp-override.yaml
@@ -215,7 +228,7 @@ The `release` workflow builds on the tag and attaches two assets to the GitHub r
 
 Listing it in the OpenCloud app store is a one-line PR to
 [`opencloud-eu/awesome-apps`](https://github.com/opencloud-eu/awesome-apps), under
-*Viewers & Editors*:
+_Viewers & Editors_:
 
 ```md
 - [office-viewer](https://github.com/lsheva/opencloud-office-viewer) - Preview .docx/.xlsx/.pptx (and legacy .doc/.xls/.ppt) fully in the browser; no office server required.

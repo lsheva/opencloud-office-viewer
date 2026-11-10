@@ -2,7 +2,7 @@ name: release
 
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -24,9 +24,8 @@ jobs:
 
       - run: pnpm check:types
 
-      # Builds dist/ and produces release/office-viewer.zip (stable name used by the
-      # install one-liner) plus release/office-viewer-<version>.zip. GitHub's
-      # auto-generated source archives are not installable: dist/ is gitignored.
+      # Builds dist/ and produces release/office-viewer.zip (stable name used by
+      # the install one-liner) plus release/office-viewer-<version>.zip.
       - run: pnpm package
 
       - uses: softprops/action-gh-release@v2
