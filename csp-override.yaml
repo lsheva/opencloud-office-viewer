@@ -1,0 +1,56 @@
+# Content-Security-Policy for office-viewer.
+#
+# OpenCloud's built-in policy is `script-src 'self' 'unsafe-inline'` with no
+# `worker-src`. @silurus/ooxml renders through Rust→WASM inside a Web Worker
+# created from a `blob:` URL, so without these directives every format fails:
+#   "Refused to load blob:… because it does not appear in the worker-src
+#    directive of the Content Security Policy" → "Worker error"
+#
+# A CSP *override* file replaces the entire policy — it is not merged per
+# directive — so the complete set of OpenCloud 9.0.0 defaults is repeated here
+# with only two additions:
+#   script-src  + 'wasm-unsafe-eval'   (allow WebAssembly compilation)
+#   worker-src   new: 'self' blob:     (allow blob: workers)
+# Keep this in sync if OpenCloud changes its default policy.
+directives:
+  child-src:
+    - "'self'"
+    - "blob:"
+  connect-src:
+    - "'self'"
+    - "blob:"
+    - "https://raw.githubusercontent.com/opencloud-eu/awesome-apps/"
+    - "https://update.opencloud.eu/"
+  default-src:
+    - "'none'"
+  font-src:
+    - "'self'"
+  frame-ancestors:
+    - "'self'"
+  frame-src:
+    - "'self'"
+    - "blob:"
+    - "https://embed.diagrams.net/"
+  img-src:
+    - "'self'"
+    - "data:"
+    - "blob:"
+    - "https://raw.githubusercontent.com/opencloud-eu/awesome-apps/"
+  manifest-src:
+    - "'self'"
+  media-src:
+    - "'self'"
+  object-src:
+    - "'self'"
+    - "blob:"
+  script-src:
+    - "'self'"
+    - "'unsafe-inline'"
+    - "'wasm-unsafe-eval'"
+  style-src:
+    - "'self'"
+    - "'unsafe-inline'"
+    - "blob:"
+  worker-src:
+    - "'self'"
+    - "blob:"

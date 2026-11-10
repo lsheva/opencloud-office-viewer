@@ -1,0 +1,37 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm check:types
+
+      # Builds dist/ and produces release/office-viewer.zip (stable name used by the
+      # install one-liner) plus release/office-viewer-<version>.zip. GitHub's
+      # auto-generated source archives are not installable: dist/ is gitignored.
+      - run: pnpm package
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/office-viewer.zip
+            release/office-viewer-*.zip
+          generate_release_notes: true

@@ -1,0 +1,59 @@
+{
+  "name": "office-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Client-side preview for Office documents in OpenCloud Web: docx/xlsx/pptx plus legacy doc/xls/ppt, rendered with @silurus/ooxml in WASM. No office server required.",
+  "license": "AGPL-3.0-or-later",
+  "author": {
+    "name": "Oleksandr Shevchuk",
+    "email": "lsheva7@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lsheva/opencloud-office-viewer.git"
+  },
+  "homepage": "https://github.com/lsheva/opencloud-office-viewer#readme",
+  "bugs": {
+    "url": "https://github.com/lsheva/opencloud-office-viewer/issues"
+  },
+  "keywords": [
+    "opencloud",
+    "opencloud-web-app",
+    "office",
+    "docx",
+    "xlsx",
+    "pptx",
+    "wasm",
+    "viewer",
+    "preview"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "build": "pnpm vite build",
+    "build:w": "pnpm vite build --watch --mode development",
+    "check:types": "tsc --runExternalCode",
+    "package": "sh scripts/package.sh"
+  },
+  "dependencies": {
+    "@silurus/ooxml": "0.89.8",
+    "@silurus/ooxml-legacy-office": "0.89.8"
+  },
+  "devDependencies": {
+    "@opencloud-eu/design-system": "^8.2.1",
+    "@opencloud-eu/extension-sdk": "^8.2.1",
+    "@opencloud-eu/tsconfig": "^8.2.1",
+    "@opencloud-eu/web-client": "^8.2.1",
+    "@opencloud-eu/web-pkg": "^8.2.1",
+    "@vue/content-mapper": "^4.0.0-alpha.3",
+    "typescript": "7.1.0-beta",
+    "vite": "^8.3.7",
+    "vue": "^3.5.45",
+    "vue-router": "^5.4.0",
+    "vue3-gettext": "^4.0.1"
+  },
+  "packageManager": "pnpm@11.27.0"
+}

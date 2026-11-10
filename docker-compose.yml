@@ -1,0 +1,70 @@
+# Throwaway OpenCloud instance to test the office-viewer app locally.
+#
+#   1. pnpm install && pnpm build          # produces ./dist with manifest.json
+#   2. docker compose up
+#   3. open https://localhost:9200  (admin / admin)
+#   4. Personal space → "office-viewer-samples" holds one file per supported format
+#
+# OC_URL must be a name the *browser* can resolve. host.docker.internal only
+# exists inside containers on macOS, and it is baked into config.json (server,
+# theme, OIDC issuer) at init time — pointing it at an unresolvable host makes
+# the web UI fail with "Missing or invalid config". If you change OC_URL, drop
+# the config volume first (`docker compose down -v`) or init keeps the old one.
+#
+# The built app is mounted at /web/apps/office-viewer and served because
+# WEB_ASSET_APPS_PATH points at /web/apps. Rebuild with `pnpm build:w` while the
+# stack runs; reload the browser to pick up changes.
+#
+# The `seed` service uploads ./samples over WebDAV. A plain bind mount of the
+# folder into the `opencloud` container would not help: OpenCloud only exposes
+# resources that were written through its storage layer. Re-run the upload with
+#   docker compose run --rm seed
+services:
+  opencloud:
+    image: ${OC_IMAGE:-opencloudeu/opencloud-rolling:9.0.0}
+    entrypoint: /bin/sh
+    command: ["-c", "opencloud init || true && opencloud server"]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      OC_URL: https://localhost:9200
+      OC_INSECURE: true
+      OC_LOG_LEVEL: error
+      IDM_ADMIN_PASSWORD: admin
+      IDM_CREATE_DEMO_USERS: true
+      PROXY_ENABLE_BASIC_AUTH: true
+      # WASM + blob: workers for @silurus/ooxml — see csp-override.yaml.
+      PROXY_CSP_CONFIG_FILE_OVERRIDE_LOCATION: /etc/opencloud/csp-override.yaml
+      WEB_ASSET_APPS_PATH: /web/apps
+    ports:
+      - "9200:9200"
+    volumes:
+      - opencloud-config:/etc/opencloud
+      - ./dist:/web/apps/office-viewer
+      - ./csp-override.yaml:/etc/opencloud/csp-override.yaml:ro
+
+  # One-shot: pushes ./samples into the admin's personal space and exits.
+  seed:
+    image: node:lts-alpine
+    depends_on:
+      - opencloud
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      # Inside a container `localhost` is the container itself, so reach the
+      # published port through the host gateway instead (WebDAV/basic auth does
+      # not care about this host differing from OC_URL).
+      OC_URL: https://host.docker.internal:9200
+      OC_USER: admin
+      OC_PASSWORD: admin
+      OC_FOLDER: office-viewer-samples
+      # Dev instance uses a self-signed certificate.
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./samples:/app/samples:ro
+    command: ["node", "/app/scripts/seed-samples.mjs"]
+    restart: "no"
+
+volumes:
+  opencloud-config:
