@@ -31,6 +31,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
+            release/office-viewer.tar.gz
+            release/office-viewer-*.tar.gz
             release/office-viewer.zip
             release/office-viewer-*.zip
           generate_release_notes: true

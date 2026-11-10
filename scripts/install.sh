@@ -2,12 +2,12 @@
 # Installs office-viewer into an OpenCloud instance.
 #
 #   curl -fsSL https://raw.githubusercontent.com/lsheva/opencloud-office-viewer/main/scripts/install.sh | sh
-#   sh install.sh --detect        # show the paths it would use, change nothing
+#   sh install.sh --detect        # show the detected paths, change nothing
 #
-# Everything that does not need privileges runs first: download, unpack, validate,
-# locate the apps directory. sudo is then requested per step, and only for the
-# steps that actually need it — if the target directories are already writable it
-# is never asked for at all.
+# Order of work: everything that needs no privileges happens first (download,
+# unpack, validate, locate directories, fetch the CSP file). Only then does it
+# plan the changes, show them, and ask for sudo once — and only if some target
+# is not already writable. All privileged commands run from that single call.
 #
 # Environment:
 #   APPS_DIR        override the detected apps directory
@@ -19,7 +19,7 @@
 #   SUDO_CMD        privileged-command wrapper (default: sudo; empty = run directly)
 set -eu
 
-default_source=https://github.com/lsheva/opencloud-office-viewer/releases/latest/download/office-viewer.zip
+default_source=https://github.com/lsheva/opencloud-office-viewer/releases/latest/download/office-viewer.tar.gz
 source_arg=${1:-$default_source}
 
 apps_dir_override=${APPS_DIR:-}
@@ -29,20 +29,12 @@ csp_target=${CSP_TARGET:-/etc/opencloud/csp-override.yaml}
 dropin=${DROPIN_PATH:-/etc/systemd/system/opencloud.service.d/csp.conf}
 sudo_cmd=${SUDO_CMD-sudo}
 
-use_sudo=0
-
 step() { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 
-as_root() {
-  if [ "$use_sudo" = "1" ]; then
-    "$sudo_cmd" "$@"
-  else
-    "$@"
-  fi
-}
+# Single-quote a value for the generated plan script.
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-# True when the nearest existing ancestor of $1 is writable by the current user.
 can_write_dir() {
   d=$1
   while [ ! -e "$d" ]; do
@@ -74,45 +66,6 @@ detect_apps_dir() {
   printf '%s' "${OC_DATA_DIR:-/var/lib/opencloud}/web/assets/apps"
 }
 
-# Refinement that needs root: the running service knows its own data directory,
-# which also works when no apps directory exists yet.
-detect_apps_dir_from_service() {
-  command -v systemctl >/dev/null 2>&1 || return 1
-  pid=$(systemctl show -p MainPID --value opencloud 2>/dev/null || true)
-  [ -n "${pid:-}" ] && [ "$pid" != "0" ] || return 1
-  env_blob=$(as_root sh -c "tr '\0' '\n' < /proc/$pid/environ" 2>/dev/null) || return 1
-
-  explicit=$(printf '%s\n' "$env_blob" | sed -n 's/^WEB_ASSET_APPS_PATH=//p' | head -1)
-  [ -n "$explicit" ] && { printf '%s' "$explicit"; return 0; }
-
-  for key in OC_DATA_DIR OC_BASE_DATA_PATH OCIS_BASE_DATA_PATH; do
-    data_dir=$(printf '%s\n' "$env_blob" | sed -n "s/^$key=//p" | head -1)
-    [ -n "$data_dir" ] && { printf '%s' "$data_dir/web/assets/apps"; return 0; }
-  done
-  return 1
-}
-
-# Escalate once, at the first step that needs it, and say why.
-require_root() {
-  why=$1
-  [ "$use_sudo" = "1" ] && return 0
-  [ "$(id -u)" -eq 0 ] && return 0
-  [ -z "$sudo_cmd" ] && return 0
-
-  step "Requesting sudo"
-  note "$why"
-  command -v "$sudo_cmd" >/dev/null 2>&1 || return 1
-  "$sudo_cmd" -v || return 1
-  use_sudo=1
-
-  refined=$(detect_apps_dir_from_service || true)
-  if [ -n "${refined:-}" ] && [ "$refined" != "$apps_dir" ] && [ -z "$apps_dir_override" ]; then
-    note "the running service uses $refined — switching to it"
-    apps_dir=$refined
-  fi
-  return 0
-}
-
 fetch() {
   url_or_path=$1
   target=$2
@@ -128,32 +81,44 @@ fetch() {
   esac
 }
 
-manual_steps() {
-  keep_workdir=1
-  cat >&2 <<EOF
-    To finish by hand, as root (the unpacked bundle is kept at '$bundle'):
-
-      mkdir -p '$apps_dir'
-      cp -a '$bundle/.' '$apps_dir/office-viewer/'
-
-      # CSP override (required, otherwise nothing renders)
-      curl -fsSL -o '$csp_target' '$csp_source'        # or copy csp-override.yaml
-      mkdir -p '$(dirname "$dropin")'
-      printf '[Service]\nEnvironment=PROXY_CSP_CONFIG_FILE_OVERRIDE_LOCATION=%s\n' '$csp_target' > '$dropin'
-      systemctl daemon-reload
-      systemctl restart opencloud
-
-    Remove '$workdir' once done.
-EOF
+# Releases ship both .tar.gz and .zip; sniff the magic bytes so either works and
+# only the extractor actually needed has to be installed.
+extract() {
+  archive=$1
+  dest=$2
+  magic=$(od -An -tx1 -N2 "$archive" 2>/dev/null | tr -d ' \n')
+  case "$magic" in
+    1f8b*)
+      command -v tar >/dev/null 2>&1 || {
+        echo "tar is required for .tar.gz archives" >&2
+        exit 1
+      }
+      mkdir -p "$dest"
+      tar -xzf "$archive" -C "$dest"
+      ;;
+    504b*)
+      if command -v unzip >/dev/null 2>&1; then
+        unzip -q "$archive" -d "$dest"
+      elif command -v busybox >/dev/null 2>&1; then
+        mkdir -p "$dest"
+        busybox unzip -q -o "$archive" -d "$dest"
+      else
+        echo "this archive is a zip but unzip is not installed." >&2
+        echo "use the .tar.gz release asset instead, e.g.:" >&2
+        echo "  $default_source" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "unrecognised archive format ($magic)" >&2
+      exit 1
+      ;;
+  esac
 }
 
 # --- 1. fetch ----------------------------------------------------------------
 step "Downloading the release archive"
 note "$source_arg"
-if ! command -v unzip >/dev/null 2>&1; then
-  echo "unzip is required" >&2
-  exit 1
-fi
 
 workdir=$(mktemp -d 2>/dev/null || true)
 if [ -z "${workdir:-}" ]; then
@@ -164,12 +129,12 @@ fi
 keep_workdir=0
 trap 'if [ "${keep_workdir:-0}" = 1 ]; then :; else rm -rf "$workdir"; fi' EXIT
 
-fetch "$source_arg" "$workdir/app.zip"
-note "saved to $workdir/app.zip"
+fetch "$source_arg" "$workdir/app.archive"
+note "saved to $workdir/app.archive"
 
 # --- 2. unpack + validate ----------------------------------------------------
 step "Unpacking and validating the bundle"
-unzip -q "$workdir/app.zip" -d "$workdir/extracted"
+extract "$workdir/app.archive" "$workdir/extracted"
 
 # Archives built by scripts/package.sh have a top-level office-viewer/ folder;
 # accept a flat bundle (just manifest.json + js/ + assets/) as well.
@@ -199,74 +164,82 @@ if [ "${1:-}" = "--detect" ]; then
   exit 0
 fi
 
-# --- 4. install --------------------------------------------------------------
-step "Installing the app"
-if can_write_dir "$apps_dir"; then
-  note "writable, no sudo needed"
-else
-  require_root "needed to write $apps_dir" || {
-    manual_steps
-    exit 1
-  }
-fi
-as_root mkdir -p "$apps_dir/office-viewer"
-as_root cp -a "$bundle/." "$apps_dir/office-viewer/"
-note "$apps_dir/office-viewer"
-
-# --- 5. CSP ------------------------------------------------------------------
+# --- 4. prepare the CSP file (still unprivileged) ----------------------------
 if [ "$with_csp" = "1" ]; then
-  step "Installing the CSP override"
-  note "the library needs 'wasm-unsafe-eval' and blob: workers; OpenCloud's default policy allows neither"
-  if can_write_dir "$(dirname "$csp_target")" && can_write_dir "$(dirname "$dropin")"; then
-    note "writable, no sudo needed"
-  else
-    require_root "needed to write $csp_target and $dropin" || {
-      manual_steps
-      exit 1
-    }
-  fi
+  step "Preparing the CSP override"
+  note "the renderer needs 'wasm-unsafe-eval' and blob: workers; OpenCloud's default policy allows neither"
   fetch "$csp_source" "$workdir/csp-override.yaml"
-  as_root mkdir -p "$(dirname "$csp_target")" "$(dirname "$dropin")"
-  as_root cp "$workdir/csp-override.yaml" "$csp_target"
-  printf '[Service]\nEnvironment=PROXY_CSP_CONFIG_FILE_OVERRIDE_LOCATION=%s\n' "$csp_target" \
-    | as_root tee "$dropin" >/dev/null
-  note "$csp_target"
-  note "$dropin"
-  if command -v systemctl >/dev/null 2>&1; then
-    as_root systemctl daemon-reload
-  fi
-else
-  step "Skipping the CSP override (WITH_CSP=0)"
-  note "without it the app loads but renders nothing"
+  note "staged at $workdir/csp-override.yaml"
 fi
 
-# --- 6. restart --------------------------------------------------------------
+# --- 5. plan ---------------------------------------------------------------
+step "Planning changes"
+note "app:     $apps_dir/office-viewer"
+[ "$with_csp" = "1" ] && note "csp:     $csp_target"
+[ "$with_csp" = "1" ] && note "drop-in: $dropin"
 if [ "${NO_RESTART:-}" != "1" ]; then
-  step "Restarting OpenCloud"
-  note "app manifests are only read at startup"
-  if command -v systemctl >/dev/null 2>&1; then
-    if require_root "needed to restart the service"; then
-      restarted=""
-      for unit in opencloud opencloud.service; do
-        if as_root systemctl restart "$unit" 2>/dev/null; then
-          restarted=$unit
-          break
-        fi
-      done
-      if [ -n "$restarted" ]; then
-        note "$restarted restarted"
-      else
-        note "could not restart — run: sudo systemctl restart opencloud"
-      fi
-    else
-      note "no privileges to restart — run: sudo systemctl restart opencloud"
-    fi
-  else
-    note "no systemd here (container?) — restart OpenCloud so it re-reads app manifests"
-  fi
+  note "restart: opencloud"
 else
-  step "Not restarting (NO_RESTART=1)"
-  note "run: sudo systemctl restart opencloud"
+  note "restart: skipped (NO_RESTART=1)"
+fi
+
+plan="$workdir/apply.sh"
+{
+  printf 'mkdir -p %s\n' "$(q "$apps_dir/office-viewer")"
+  printf 'cp -a %s/. %s\n' "$(q "$bundle")" "$(q "$apps_dir/office-viewer")"
+  if [ "$with_csp" = "1" ]; then
+    printf 'mkdir -p %s %s\n' "$(q "$(dirname "$csp_target")")" "$(q "$(dirname "$dropin")")"
+    printf 'cp %s %s\n' "$(q "$workdir/csp-override.yaml")" "$(q "$csp_target")"
+    printf "printf '[Service]\\\\nEnvironment=PROXY_CSP_CONFIG_FILE_OVERRIDE_LOCATION=%%s\\\\n' %s > %s\n" \
+      "$(q "$csp_target")" "$(q "$dropin")"
+  fi
+  if [ "${NO_RESTART:-}" != "1" ]; then
+    printf 'if command -v systemctl >/dev/null 2>&1; then\n'
+    printf '  systemctl daemon-reload\n'
+    printf '  systemctl restart opencloud 2>/dev/null || systemctl restart opencloud.service 2>/dev/null || true\n'
+    printf 'fi\n'
+  fi
+} > "$plan"
+
+# Does anything in the plan need root?
+needs_root=""
+if [ "$(id -u)" -ne 0 ] && [ -n "$sudo_cmd" ]; then
+  if ! can_write_dir "$apps_dir"; then
+    needs_root="write $apps_dir"
+  fi
+  if [ "$with_csp" = "1" ] && [ -z "$needs_root" ]; then
+    if ! can_write_dir "$(dirname "$csp_target")" || ! can_write_dir "$(dirname "$dropin")"; then
+      needs_root="write $csp_target and $dropin"
+    fi
+  fi
+  if [ "${NO_RESTART:-}" != "1" ] && [ -z "$needs_root" ]; then
+    needs_root="restart the service"
+  fi
+fi
+
+# --- 6. apply ----------------------------------------------------------------
+if [ -n "$needs_root" ]; then
+  step "Applying changes (sudo)"
+  note "needed to $needs_root"
+  if ! command -v "$sudo_cmd" >/dev/null 2>&1 || ! "$sudo_cmd" -v; then
+    keep_workdir=1
+    printf '\n' >&2
+    note "Could not get sudo. Everything is staged — finish with:" >&2
+    note "  sudo sh '$plan'" >&2
+    note "or re-run as root. Staged files stay in '$workdir'." >&2
+    exit 1
+  fi
+  "$sudo_cmd" sh "$plan"
+else
+  step "Applying changes"
+  note "no sudo needed: all target paths are writable"
+  sh "$plan"
+fi
+
+note "app installed:  $apps_dir/office-viewer"
+[ "$with_csp" = "1" ] && note "csp installed:  $csp_target"
+if [ "${NO_RESTART:-}" = "1" ]; then
+  note "not restarted — run: sudo systemctl restart opencloud"
 fi
 
 step "Done"

@@ -172,19 +172,27 @@ curl -fsSL https://raw.githubusercontent.com/lsheva/opencloud-office-viewer/main
 ### Manually
 
 ```bash
-curl -fsSL -o office-viewer.zip \
-  https://github.com/lsheva/opencloud-office-viewer/releases/latest/download/office-viewer.zip
-sh scripts/install.sh office-viewer.zip      # WITH_CSP=0 to skip the CSP step
+curl -fsSL -o office-viewer.tar.gz \
+  https://github.com/lsheva/opencloud-office-viewer/releases/latest/download/office-viewer.tar.gz
+sh scripts/install.sh office-viewer.tar.gz      # WITH_CSP=0 to skip the CSP step
 ```
 
-`office-viewer.zip` is a stable asset name that always points at the newest build; a
-versioned `office-viewer-<version>.zip` is published alongside it.
+Or extract and copy it yourself:
+
+```bash
+tar -xzf office-viewer.tar.gz
+sudo cp -a office-viewer /var/lib/opencloud/web/assets/apps/
+```
+
+Both `office-viewer.tar.gz` and `office-viewer.zip` are stable asset names pointing at the
+newest build, with versioned copies alongside. The installer sniffs the archive and uses
+`tar` or `unzip` accordingly, so neither tool has to be installed in advance.
 
 ### From source
 
 ```bash
-pnpm install && pnpm package          # -> release/office-viewer.zip
-sh scripts/install.sh release/office-viewer.zip
+pnpm install && pnpm package          # -> release/office-viewer.tar.gz + .zip
+sh scripts/install.sh release/office-viewer.tar.gz
 ```
 
 ### CSP override (installed by default)

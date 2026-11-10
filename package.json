@@ -1,6 +1,6 @@
 {
   "name": "office-viewer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Client-side preview for Office documents in OpenCloud Web: docx/xlsx/pptx plus legacy doc/xls/ppt, rendered with @silurus/ooxml in WASM. No office server required.",
   "license": "AGPL-3.0-or-later",
