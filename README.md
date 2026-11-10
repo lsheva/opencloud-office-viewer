@@ -146,17 +146,18 @@ and restarting (see the
 curl -fsSL https://raw.githubusercontent.com/lsheva/opencloud-office-viewer/main/scripts/install.sh | sh
 ```
 
-No arguments, no `sudo` prefix: the script defaults to the latest release archive, asks for
-sudo once, installs the app **and** the CSP override (plus the systemd drop-in pointing at
-it), and restarts OpenCloud. If sudo is unavailable it prints the equivalent commands to
-run as root instead.
+No arguments, no `sudo` prefix: the script downloads and validates the release first, and
+only then asks for sudo (once) — saying what each privileged step is for. It installs the
+app **and** the CSP override (plus the systemd drop-in pointing at it) and restarts
+OpenCloud. If sudo is unavailable it prints the equivalent commands to run as root, keeping
+the unpacked bundle in place.
 
-| Variable | Effect |
-| --- | --- |
-| `APPS_DIR` | override the detected apps directory |
-| `WITH_CSP=0` | skip the CSP override (it is installed by default) |
-| `NO_RESTART=1` | skip `systemctl restart opencloud` |
-| `CSP_FILE` | use a local CSP file instead of downloading `csp-override.yaml` |
+| Variable       | Effect                                                          |
+| -------------- | --------------------------------------------------------------- |
+| `APPS_DIR`     | override the detected apps directory                            |
+| `WITH_CSP=0`   | skip the CSP override (it is installed by default)              |
+| `NO_RESTART=1` | skip `systemctl restart opencloud`                              |
+| `CSP_FILE`     | use a local CSP file instead of downloading `csp-override.yaml` |
 
 The apps directory is detected, not assumed: the running service's environment is read
 (`WEB_ASSET_APPS_PATH`, then `OC_DATA_DIR`/`OC_BASE_DATA_PATH`), then any existing
