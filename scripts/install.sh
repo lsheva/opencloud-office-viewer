@@ -4,9 +4,10 @@
 #   curl -fsSL https://raw.githubusercontent.com/lsheva/opencloud-office-viewer/main/scripts/install.sh | sh
 #   sh install.sh --detect        # show the paths it would use, change nothing
 #
-# Everything that does not need privileges (download, unpack, validate, locate
-# the apps directory) happens first. Only then does it ask for sudo — once — and
-# it says what each sudo step is for.
+# Everything that does not need privileges runs first: download, unpack, validate,
+# locate the apps directory. sudo is then requested per step, and only for the
+# steps that actually need it — if the target directories are already writable it
+# is never asked for at all.
 #
 # Environment:
 #   APPS_DIR        override the detected apps directory
@@ -28,15 +29,28 @@ csp_target=${CSP_TARGET:-/etc/opencloud/csp-override.yaml}
 dropin=${DROPIN_PATH:-/etc/systemd/system/opencloud.service.d/csp.conf}
 sudo_cmd=${SUDO_CMD-sudo}
 
+use_sudo=0
+
 step() { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 
 as_root() {
-  if [ "$(id -u)" -eq 0 ] || [ -z "$sudo_cmd" ]; then
-    "$@"
-  else
+  if [ "$use_sudo" = "1" ]; then
     "$sudo_cmd" "$@"
+  else
+    "$@"
   fi
+}
+
+# True when the nearest existing ancestor of $1 is writable by the current user.
+can_write_dir() {
+  d=$1
+  while [ ! -e "$d" ]; do
+    parent=$(dirname "$d")
+    [ "$parent" = "$d" ] && return 1
+    d=$parent
+  done
+  [ -w "$d" ]
 }
 
 # --- detection (no privileges required) --------------------------------------
@@ -76,6 +90,27 @@ detect_apps_dir_from_service() {
     [ -n "$data_dir" ] && { printf '%s' "$data_dir/web/assets/apps"; return 0; }
   done
   return 1
+}
+
+# Escalate once, at the first step that needs it, and say why.
+require_root() {
+  why=$1
+  [ "$use_sudo" = "1" ] && return 0
+  [ "$(id -u)" -eq 0 ] && return 0
+  [ -z "$sudo_cmd" ] && return 0
+
+  step "Requesting sudo"
+  note "$why"
+  command -v "$sudo_cmd" >/dev/null 2>&1 || return 1
+  "$sudo_cmd" -v || return 1
+  use_sudo=1
+
+  refined=$(detect_apps_dir_from_service || true)
+  if [ -n "${refined:-}" ] && [ "$refined" != "$apps_dir" ] && [ -z "$apps_dir_override" ]; then
+    note "the running service uses $refined — switching to it"
+    apps_dir=$refined
+  fi
+  return 0
 }
 
 fetch() {
@@ -155,16 +190,7 @@ note "entrypoint: $(sed -n 's/^ *"entrypoint": *"\([^"]*\)".*/\1/p' "$bundle/man
 # --- 3. locate the target ----------------------------------------------------
 step "Locating the OpenCloud apps directory"
 apps_dir=$(detect_apps_dir)
-case "$apps_dir" in
-  "$apps_dir_override") note "$apps_dir (APPS_DIR)" ;;
-  *)
-    if [ "$(id -u)" -eq 0 ] || [ -z "$sudo_cmd" ]; then
-      note "$apps_dir"
-    else
-      note "$apps_dir (from the filesystem; confirmed with the service below)"
-    fi
-    ;;
-esac
+note "$apps_dir"
 
 if [ "${1:-}" = "--detect" ]; then
   printf '\n'
@@ -173,41 +199,32 @@ if [ "${1:-}" = "--detect" ]; then
   exit 0
 fi
 
-# --- 4. privileged steps -----------------------------------------------------
-need_sudo=0
-if [ "$(id -u)" -ne 0 ] && [ -n "$sudo_cmd" ]; then
-  if command -v "$sudo_cmd" >/dev/null 2>&1; then
-    need_sudo=1
-  else
-    step "Root privileges are required for the remaining steps"
-    manual_steps
-    exit 1
-  fi
-fi
-
-if [ "$need_sudo" = "1" ]; then
-  step "Requesting sudo"
-  note "needed to write $apps_dir, add the CSP override and restart the service"
-  if ! "$sudo_cmd" -v; then
-    manual_steps
-    exit 1
-  fi
-
-  refined=$(detect_apps_dir_from_service || true)
-  if [ -n "${refined:-}" ] && [ "$refined" != "$apps_dir" ] && [ -z "$apps_dir_override" ]; then
-    note "the service reports $refined — installing there instead"
-    apps_dir=$refined
-  fi
-fi
-
+# --- 4. install --------------------------------------------------------------
 step "Installing the app"
+if can_write_dir "$apps_dir"; then
+  note "writable, no sudo needed"
+else
+  require_root "needed to write $apps_dir" || {
+    manual_steps
+    exit 1
+  }
+fi
 as_root mkdir -p "$apps_dir/office-viewer"
 as_root cp -a "$bundle/." "$apps_dir/office-viewer/"
 note "$apps_dir/office-viewer"
 
+# --- 5. CSP ------------------------------------------------------------------
 if [ "$with_csp" = "1" ]; then
   step "Installing the CSP override"
   note "the library needs 'wasm-unsafe-eval' and blob: workers; OpenCloud's default policy allows neither"
+  if can_write_dir "$(dirname "$csp_target")" && can_write_dir "$(dirname "$dropin")"; then
+    note "writable, no sudo needed"
+  else
+    require_root "needed to write $csp_target and $dropin" || {
+      manual_steps
+      exit 1
+    }
+  fi
   fetch "$csp_source" "$workdir/csp-override.yaml"
   as_root mkdir -p "$(dirname "$csp_target")" "$(dirname "$dropin")"
   as_root cp "$workdir/csp-override.yaml" "$csp_target"
@@ -223,22 +240,29 @@ else
   note "without it the app loads but renders nothing"
 fi
 
+# --- 6. restart --------------------------------------------------------------
 if [ "${NO_RESTART:-}" != "1" ]; then
   step "Restarting OpenCloud"
   note "app manifests are only read at startup"
-  restarted=""
   if command -v systemctl >/dev/null 2>&1; then
-    for unit in opencloud opencloud.service; do
-      if as_root systemctl restart "$unit" 2>/dev/null; then
-        restarted=$unit
-        break
+    if require_root "needed to restart the service"; then
+      restarted=""
+      for unit in opencloud opencloud.service; do
+        if as_root systemctl restart "$unit" 2>/dev/null; then
+          restarted=$unit
+          break
+        fi
+      done
+      if [ -n "$restarted" ]; then
+        note "$restarted restarted"
+      else
+        note "could not restart — run: sudo systemctl restart opencloud"
       fi
-    done
-  fi
-  if [ -n "$restarted" ]; then
-    note "$restarted restarted"
+    else
+      note "no privileges to restart — run: sudo systemctl restart opencloud"
+    fi
   else
-    note "could not restart automatically — run: sudo systemctl restart opencloud"
+    note "no systemd here (container?) — restart OpenCloud so it re-reads app manifests"
   fi
 else
   step "Not restarting (NO_RESTART=1)"
